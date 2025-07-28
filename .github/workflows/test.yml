@@ -1,0 +1,73 @@
+name: Microsoft Graph Sensitivity Labels API
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  call-graph-api:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Azure Login using OIDC
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        
+    - name: Get Access Token for Microsoft Graph
+      id: get-token
+      run: |
+        # Get access token using the authenticated Azure CLI context
+        ACCESS_TOKEN=$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)
+        
+        if [ -z "$ACCESS_TOKEN" ]; then
+          echo "Failed to get access token"
+          exit 1
+        fi
+        
+        echo "::add-mask::$ACCESS_TOKEN"
+        echo "access_token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
+        
+    - name: Get Push Context
+      id: context
+      run: |
+        echo "Triggered by: ${{ github.actor }}"
+        echo "Commit SHA: ${{ github.sha }}"
+        echo "Repository: ${{ github.repository }}"
+        echo "Branch: ${{ github.ref_name }}"
+        
+    - name: Call Microsoft Graph API - Sensitivity Labels
+      run: |
+        echo "🔍 Calling Microsoft Graph API on behalf of push by ${{ github.actor }}"
+        
+        RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+          -H "Authorization: Bearer ${{ steps.get-token.outputs.access_token }}" \
+          -H "Content-Type: application/json" \
+          -H "X-GitHub-Actor: ${{ github.actor }}" \
+          -H "X-GitHub-Repo: ${{ github.repository }}" \
+          "https://graph.microsoft.com/v1.0/security/dataSecurityAndGovernance/sensitivityLabels")
+        
+        HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+        BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
+        
+        echo "HTTP Status: $HTTP_STATUS"
+        echo "Response Body:"
+        echo "$BODY" | jq '.' || echo "$BODY"
+        
+        if [ "$HTTP_STATUS" -ne 200 ]; then
+          echo "API call failed with status: $HTTP_STATUS"
+          exit 1
+        fi
+        
+        echo "✅ Successfully retrieved sensitivity labels for push by ${{ github.actor }}"
